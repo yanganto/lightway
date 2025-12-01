@@ -93,6 +93,7 @@
 
           packages.lightway-client = rustPackage "latest" "lightway-client" clientFeatures;
           packages.lightway-server = rustPackage "latest" "lightway-server" serverFeatures;
+          packages.server-start = serverStartScript;
           packages.lightway-client-msrv = rustPackage msrv "lightway-client" clientFeatures;
           packages.lightway-server-msrv = rustPackage msrv "lightway-server" serverFeatures;
 
