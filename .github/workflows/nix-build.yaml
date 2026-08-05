@@ -2,6 +2,9 @@ name: Nix Build and Test
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - split-ci
   schedule:
     # Run daily at 18:00 UTC
     - cron: '0 18 * * *'
