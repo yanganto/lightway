@@ -32,7 +32,7 @@ jobs:
         run: nix flake check
 
   nix-build-dyn:
-    name: ${{ matrix.package }} (${{ matrix.platform }})
+    name: ${{ matrix.target }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -41,47 +41,25 @@ jobs:
           # ===================================================================
           # x86_64 Linux (ubuntu-latest)
           # ===================================================================
-          # Native builds
           - runner: ubuntu-latest
             platform: x86_64-linux
-            package: lightway-client-x86_64-linux-gnu
+            target: x86_64-linux-gnu
             build_type: "native"
           - runner: ubuntu-latest
             platform: x86_64-linux
-            package: lightway-server-x86_64-linux-gnu
-            build_type: "native"
-
-          # Cross-compile to aarch64
-          - runner: ubuntu-latest
-            platform: x86_64-linux
-            package: lightway-client-aarch64-linux-gnu
-            build_type: "cross"
-          - runner: ubuntu-latest
-            platform: x86_64-linux
-            package: lightway-server-aarch64-linux-gnu
+            target: aarch64-linux-gnu
             build_type: "cross"
 
           # ===================================================================
           # aarch64 Linux (ubuntu-24.04-arm)
           # ===================================================================
-          # Native builds
           - runner: ubuntu-24.04-arm
             platform: aarch64-linux
-            package: lightway-client-aarch64-linux-gnu
+            target: aarch64-linux-gnu
             build_type: "native"
           - runner: ubuntu-24.04-arm
             platform: aarch64-linux
-            package: lightway-server-aarch64-linux-gnu
-            build_type: "native"
-
-          # Cross-compile to x86_64
-          - runner: ubuntu-24.04-arm
-            platform: aarch64-linux
-            package: lightway-client-x86_64-linux-gnu
-            build_type: "cross"
-          - runner: ubuntu-24.04-arm
-            platform: aarch64-linux
-            package: lightway-server-x86_64-linux-gnu
+            target: x86_64-linux-gnu
             build_type: "cross"
 
     steps:
@@ -100,47 +78,61 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Build ${{ matrix.package }}
-        run: nix build .#${{ matrix.package }} -o result --print-build-logs
-
-      - name: Verify binary is dynamically linked
+      - name: Build ${{ matrix.target }}
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "Checking binary: $binary_path"
+          nix build .#lightway-client-${{ matrix.target }} .#lightway-server-${{ matrix.target }} --print-build-logs
+          ln -sf $(nix path-info .#lightway-client-${{ matrix.target }}) result-client
+          ln -sf $(nix path-info .#lightway-server-${{ matrix.target }}) result-server
 
-          file_output=$(file "$binary_path")
-          echo "File output: $file_output"
+      - name: Verify binaries are dynamically linked
+        run: |
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "Checking binary: $binary_path"
 
-          if echo "$file_output" | grep -q "dynamically linked"; then
-            echo "✓ Binary is correctly dynamically linked"
-          else
-            echo "✗ Expected 'dynamically linked' but got:"
-            echo "$file_output"
-            exit 1
-          fi
+            file_output=$(file "$binary_path")
+            echo "File output: $file_output"
+
+            if echo "$file_output" | grep -q "dynamically linked"; then
+              echo "✓ Binary is correctly dynamically linked"
+            else
+              echo "✗ Expected 'dynamically linked' but got:"
+              echo "$file_output"
+              exit 1
+            fi
+          done
 
       - name: Show binary info
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "=== Binary Information ==="
-          ls -lh "$binary_path"
-          file "$binary_path"
-          echo ""
-          echo "=== Dynamic Dependencies ==="
-          ldd "$binary_path" 2>&1 || true
-          echo ""
-          echo "=== ELF Header ==="
-          readelf -h "$binary_path" || true
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "=== Binary Information: $binary_path ==="
+            ls -lh "$binary_path"
+            file "$binary_path"
+            echo ""
+            echo "=== Dynamic Dependencies ==="
+            ldd "$binary_path" 2>&1 || true
+            echo ""
+            echo "=== ELF Header ==="
+            readelf -h "$binary_path" || true
+          done
 
-      - name: Upload artifact
+      - name: Upload client artifact
         uses: actions/upload-artifact@v5.0.0
         with:
-          name: ${{ matrix.package }}-${{ matrix.build_type }}-${{ matrix.platform }}
-          path: result/bin/*
+          name: lightway-client-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-client/bin/*
+          if-no-files-found: error
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: lightway-server-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-server/bin/*
           if-no-files-found: error
 
   nix-build-static:
-    name: ${{ matrix.package }} (${{ matrix.platform }})
+    name: ${{ matrix.target }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -149,113 +141,60 @@ jobs:
           # ===================================================================
           # x86_64 Linux (ubuntu-latest)
           # ===================================================================
-          # Musl static builds (same arch, different libc)
           - runner: ubuntu-latest
             platform: x86_64-linux
-            package: lightway-client-x86_64-linux-musl
+            target: x86_64-linux-musl
             verify_type: "static-pie linked"
             build_type: "native"
           - runner: ubuntu-latest
             platform: x86_64-linux
-            package: lightway-server-x86_64-linux-musl
-            verify_type: "static-pie linked"
-            build_type: "native"
-
-          # Cross-compile to aarch64
-          - runner: ubuntu-latest
-            platform: x86_64-linux
-            package: lightway-client-aarch64-linux-musl
-            verify_type: "musl-static"
-            build_type: "cross"
-          - runner: ubuntu-latest
-            platform: x86_64-linux
-            package: lightway-server-aarch64-linux-musl
+            target: aarch64-linux-musl
             verify_type: "musl-static"
             build_type: "cross"
 
           # ===================================================================
           # aarch64 Linux (ubuntu-24.04-arm)
           # ===================================================================
-          # Musl static builds (same arch, different libc)
+          # Native aarch64 musl builds are commented out pending investigation
           # - runner: ubuntu-24.04-arm
           #   platform: aarch64-linux
-          #   package: lightway-client-aarch64-linux-musl
-          #   verify_type: "musl-static"
-          #   build_type: "native"
-          # - runner: ubuntu-24.04-arm
-          #   platform: aarch64-linux
-          #   package: lightway-server-aarch64-linux-musl
+          #   target: aarch64-linux-musl
           #   verify_type: "musl-static"
           #   build_type: "native"
 
           # Cross-compile to x86_64
           - runner: ubuntu-24.04-arm
             platform: aarch64-linux
-            package: lightway-client-x86_64-linux-musl
-            verify_type: "static-pie linked"
-            build_type: "cross"
-          - runner: ubuntu-24.04-arm
-            platform: aarch64-linux
-            package: lightway-server-x86_64-linux-musl
+            target: x86_64-linux-musl
             verify_type: "static-pie linked"
             build_type: "cross"
 
           # ===================================================================
           # macOS (macos-latest - Apple Silicon)
           # ===================================================================
-          # Native builds
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-client-aarch64-darwin
+            target: aarch64-darwin
             verify_type: "skip"  # macOS binaries
             build_type: "native"
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-server-aarch64-darwin
-            verify_type: "skip"
-            build_type: "native"
-
-          # Cross-compile to x86_64 Linux
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-client-x86_64-linux-musl
+            target: x86_64-linux-musl
             verify_type: "skip"  # Verified on Linux
             build_type: "cross"
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-server-x86_64-linux-musl
+            target: x86_64-linux-gnu
             verify_type: "skip"
             build_type: "cross"
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-client-x86_64-linux-gnu
+            target: aarch64-linux-musl
             verify_type: "skip"
             build_type: "cross"
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-server-x86_64-linux-gnu
-            verify_type: "skip"
-            build_type: "cross"
-
-          # Cross-compile to aarch64 Linux
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-client-aarch64-linux-musl
-            verify_type: "skip"
-            build_type: "cross"
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-server-aarch64-linux-musl
-            verify_type: "skip"
-            build_type: "cross"
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-client-aarch64-linux-gnu
-            verify_type: "skip"
-            build_type: "cross"
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-server-aarch64-linux-gnu
+            target: aarch64-linux-gnu
             verify_type: "skip"
             build_type: "cross"
 
@@ -276,78 +215,89 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Build ${{ matrix.package }}
-        run: nix build .#${{ matrix.package }} -o result --print-build-logs
+      - name: Build ${{ matrix.target }}
+        run: |
+          nix build .#lightway-client-${{ matrix.target }} .#lightway-server-${{ matrix.target }} --print-build-logs
+          ln -sf $(nix path-info .#lightway-client-${{ matrix.target }}) result-client
+          ln -sf $(nix path-info .#lightway-server-${{ matrix.target }}) result-server
 
       - name: Verify binary linking type (Linux only)
         if: matrix.verify_type != 'skip'
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "Checking binary: $binary_path"
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "Checking binary: $binary_path"
 
-          file_output=$(file "$binary_path")
-          echo "File output: $file_output"
+            file_output=$(file "$binary_path")
+            echo "File output: $file_output"
 
-          # For musl-static, verify by checking NEEDED entries (not file output)
-          if [[ "${{ matrix.verify_type }}" == "musl-static" ]]; then
-            echo "Verifying musl static binary (checking NEEDED entries)..."
+            # For musl-static, verify by checking NEEDED entries (not file output)
+            if [[ "${{ matrix.verify_type }}" == "musl-static" ]]; then
+              echo "Verifying musl static binary (checking NEEDED entries)..."
 
-            # Check for NEEDED entries using readelf
-            if readelf -d "$binary_path" 2>&1 | grep -q "(NEEDED)"; then
-              echo "✗ Binary has NEEDED entries (not truly static):"
-              readelf -d "$binary_path" | grep "(NEEDED)"
+              if readelf -d "$binary_path" 2>&1 | grep -q "(NEEDED)"; then
+                echo "✗ Binary has NEEDED entries (not truly static):"
+                readelf -d "$binary_path" | grep "(NEEDED)"
+                exit 1
+              fi
+
+              echo "✓ Binary is truly static (no NEEDED entries)"
+              echo "Note: aarch64 may show 'dynamically linked' in file output (cosmetic only)"
+
+            elif echo "$file_output" | grep -q "${{ matrix.verify_type }}"; then
+              echo "✓ Binary is correctly ${{ matrix.verify_type }}"
+            else
+              echo "✗ Expected '${{ matrix.verify_type }}' but got:"
+              echo "$file_output"
               exit 1
             fi
 
-            echo "✓ Binary is truly static (no NEEDED entries)"
-            echo "Note: aarch64 may show 'dynamically linked' in file output (cosmetic only)"
-
-          # For other types, check file output
-          elif echo "$file_output" | grep -q "${{ matrix.verify_type }}"; then
-            echo "✓ Binary is correctly ${{ matrix.verify_type }}"
-          else
-            echo "✗ Expected '${{ matrix.verify_type }}' but got:"
-            echo "$file_output"
-            exit 1
-          fi
-
-          # Additional verification for static builds
-          if [[ "${{ matrix.verify_type }}" == "static-pie linked" ]] || [[ "${{ matrix.verify_type }}" == "musl-static" ]]; then
-            echo "Verifying no dynamic dependencies..."
-            if ldd "$binary_path" 2>&1 | grep -v "not a dynamic executable" | grep -v "statically linked" | grep -v "linux-vdso"; then
-              if ldd "$binary_path" 2>&1 | grep "=>"; then
-                echo "✗ Static binary has unexpected dynamic dependencies:"
-                ldd "$binary_path"
-                exit 1
+            if [[ "${{ matrix.verify_type }}" == "static-pie linked" ]] || [[ "${{ matrix.verify_type }}" == "musl-static" ]]; then
+              echo "Verifying no dynamic dependencies..."
+              if ldd "$binary_path" 2>&1 | grep -v "not a dynamic executable" | grep -v "statically linked" | grep -v "linux-vdso"; then
+                if ldd "$binary_path" 2>&1 | grep "=>"; then
+                  echo "✗ Static binary has unexpected dynamic dependencies:"
+                  ldd "$binary_path"
+                  exit 1
+                fi
               fi
+              echo "✓ No unexpected dynamic dependencies found"
             fi
-            echo "✓ No unexpected dynamic dependencies found"
-          fi
+          done
 
       - name: Show binary info
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "=== Binary Information ==="
-          ls -lh "$binary_path"
-          file "$binary_path"
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            echo ""
-            echo "=== Dynamic Dependencies ==="
-            ldd "$binary_path" 2>&1 || true
-            echo ""
-            echo "=== ELF Header ==="
-            readelf -h "$binary_path" || true
-          fi
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "=== Binary Information: $binary_path ==="
+            ls -lh "$binary_path"
+            file "$binary_path"
+            if [[ "${{ runner.os }}" == "Linux" ]]; then
+              echo ""
+              echo "=== Dynamic Dependencies ==="
+              ldd "$binary_path" 2>&1 || true
+              echo ""
+              echo "=== ELF Header ==="
+              readelf -h "$binary_path" || true
+            fi
+          done
 
-      - name: Upload artifact
+      - name: Upload client artifact
         uses: actions/upload-artifact@v5.0.0
         with:
-          name: ${{ matrix.package }}-${{ matrix.build_type }}-${{ matrix.platform }}
-          path: result/bin/*
+          name: lightway-client-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-client/bin/*
+          if-no-files-found: error
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: lightway-server-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-server/bin/*
           if-no-files-found: error
 
   nix-build-msrv:
-    name: ${{ matrix.package }} (${{ matrix.platform }}) [MSRV]
+    name: ${{ matrix.target }} (${{ matrix.platform }}) [MSRV]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -358,12 +308,7 @@ jobs:
           # ===================================================================
           - runner: ubuntu-latest
             platform: x86_64-linux
-            package: lightway-client-x86_64-linux-gnu-msrv
-            verify_type: "dynamically linked"
-            build_type: "native"
-          - runner: ubuntu-latest
-            platform: x86_64-linux
-            package: lightway-server-x86_64-linux-gnu-msrv
+            target: x86_64-linux-gnu-msrv
             verify_type: "dynamically linked"
             build_type: "native"
 
@@ -372,12 +317,7 @@ jobs:
           # ===================================================================
           - runner: ubuntu-24.04-arm
             platform: aarch64-linux
-            package: lightway-client-aarch64-linux-gnu-msrv
-            verify_type: "dynamically linked"
-            build_type: "native"
-          - runner: ubuntu-24.04-arm
-            platform: aarch64-linux
-            package: lightway-server-aarch64-linux-gnu-msrv
+            target: aarch64-linux-gnu-msrv
             verify_type: "dynamically linked"
             build_type: "native"
 
@@ -386,12 +326,7 @@ jobs:
           # ===================================================================
           - runner: macos-latest
             platform: aarch64-darwin
-            package: lightway-client-aarch64-darwin-msrv
-            verify_type: "skip"
-            build_type: "native"
-          - runner: macos-latest
-            platform: aarch64-darwin
-            package: lightway-server-aarch64-darwin-msrv
+            target: aarch64-darwin-msrv
             verify_type: "skip"
             build_type: "native"
 
@@ -412,46 +347,60 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Build ${{ matrix.package }}
-        run: nix build .#${{ matrix.package }} -o result --print-build-logs
+      - name: Build ${{ matrix.target }}
+        run: |
+          nix build .#lightway-client-${{ matrix.target }} .#lightway-server-${{ matrix.target }} --print-build-logs
+          ln -sf $(nix path-info .#lightway-client-${{ matrix.target }}) result-client
+          ln -sf $(nix path-info .#lightway-server-${{ matrix.target }}) result-server
 
       - name: Verify binary linking type (Linux only)
         if: matrix.verify_type != 'skip'
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "Checking binary: $binary_path"
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "Checking binary: $binary_path"
 
-          file_output=$(file "$binary_path")
-          echo "File output: $file_output"
+            file_output=$(file "$binary_path")
+            echo "File output: $file_output"
 
-          if echo "$file_output" | grep -q "${{ matrix.verify_type }}"; then
-            echo "✓ Binary is correctly ${{ matrix.verify_type }}"
-          else
-            echo "✗ Expected '${{ matrix.verify_type }}' but got:"
-            echo "$file_output"
-            exit 1
-          fi
+            if echo "$file_output" | grep -q "${{ matrix.verify_type }}"; then
+              echo "✓ Binary is correctly ${{ matrix.verify_type }}"
+            else
+              echo "✗ Expected '${{ matrix.verify_type }}' but got:"
+              echo "$file_output"
+              exit 1
+            fi
+          done
 
       - name: Show binary info
         run: |
-          binary_path=$(find result/bin -type f | head -n 1)
-          echo "=== Binary Information ==="
-          ls -lh "$binary_path"
-          file "$binary_path"
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            echo ""
-            echo "=== Dynamic Dependencies ==="
-            ldd "$binary_path" 2>&1 || true
-            echo ""
-            echo "=== ELF Header ==="
-            readelf -h "$binary_path" || true
-          fi
+          for result_dir in result-client result-server; do
+            binary_path=$(find $result_dir/bin -type f | head -n 1)
+            echo "=== Binary Information: $binary_path ==="
+            ls -lh "$binary_path"
+            file "$binary_path"
+            if [[ "${{ runner.os }}" == "Linux" ]]; then
+              echo ""
+              echo "=== Dynamic Dependencies ==="
+              ldd "$binary_path" 2>&1 || true
+              echo ""
+              echo "=== ELF Header ==="
+              readelf -h "$binary_path" || true
+            fi
+          done
 
-      - name: Upload artifact
+      - name: Upload client artifact
         uses: actions/upload-artifact@v5.0.0
         with:
-          name: ${{ matrix.package }}-${{ matrix.build_type }}-${{ matrix.platform }}
-          path: result/bin/*
+          name: lightway-client-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-client/bin/*
+          if-no-files-found: error
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: lightway-server-${{ matrix.target }}-${{ matrix.build_type }}-${{ matrix.platform }}
+          path: result-server/bin/*
           if-no-files-found: error
 
   verify-nix-builds:
