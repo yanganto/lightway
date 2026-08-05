@@ -3,6 +3,7 @@
   perSystem =
     {
       lib,
+      crane,
       pkgs,
       pkgsDarwinX64,
       system,
@@ -87,61 +88,89 @@
         || config.arch != nativeArch # Linux: include cross-arch gnu
       ) allTargets;
 
-      # Helper: Create cross-compilation toolchain
-      mkCrossToolchain =
+      mkPackagePair =
         targetName: config:
         let
           rust = (config.rustBin or rustStable).minimal.override { targets = [ config.rustTarget ]; };
+          craneLib = (crane.mkLib config.pkgsCross).overrideToolchain (_p: rust);
+          src = craneLib.cleanCargoSource ../..;
+
+          buildFeatures = lib.optionals (config.os == "linux") [ "io-uring" ];
+
+          rustflags =
+            lib.optionalString config.isStatic "-C target-feature=+crt-static -C link-arg=-static"
+            + lib.optionalString (
+              !config.isStatic && config.os == "linux"
+            ) " -C linker=${config.pkgsCross.stdenv.cc.targetPrefix}cc -C link-arg=-fuse-ld=bfd"
+            + lib.optionalString (
+              !config.isStatic && config.os == "darwin"
+            ) " -C linker=${config.pkgsCross.stdenv.cc.targetPrefix}cc";
+
+          crossEnv = {
+            CARGO_BUILD_TARGET = config.rustTarget;
+            RUSTFLAGS = rustflags;
+            # Use build-platform libclang with target-platform headers for bindgen
+            LIBCLANG_PATH = "${lib.getLib pkgs.buildPackages.llvmPackages.libclang}/lib";
+            BINDGEN_EXTRA_CLANG_ARGS = lib.concatStringsSep " " (
+              [
+                "--target=${config.pkgsCross.stdenv.hostPlatform.config}"
+                "-isystem ${lib.getDev config.pkgsCross.stdenv.cc.libc}/include"
+                "-I${pkgs.buildPackages.llvmPackages.clang}/resource-root/include"
+              ]
+              ++ lib.optionals (config.pkgsCross.stdenv.cc ? nix-support) [
+                "$(< ${config.pkgsCross.stdenv.cc}/nix-support/libc-cflags)"
+                "$(< ${config.pkgsCross.stdenv.cc}/nix-support/cc-cflags)"
+              ]
+            );
+            NIX_CFLAGS_COMPILE = lib.optionalString (
+              config.pkgsCross.stdenv.hostPlatform.isAarch && config.pkgsCross.stdenv.hostPlatform.isLinux
+            ) "-march=${config.pkgsCross.stdenv.hostPlatform.gcc.arch}+crypto";
+          };
+
+          commonArgs = {
+            inherit src buildFeatures;
+            strictDeps = true;
+            nativeBuildInputs = [
+              pkgs.autoconf
+              pkgs.automake
+              pkgs.libtool
+            ];
+          }
+          // crossEnv;
+
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+          mkPkg =
+            package:
+            pkgs.callPackage ../. {
+              inherit
+                craneLib
+                src
+                cargoArtifacts
+                buildFeatures
+                ;
+              nativeBuildInputs = commonArgs.nativeBuildInputs;
+              package = package;
+              pname = package;
+              extraEnv = crossEnv;
+              cargoTomlPath = ../../${package}/Cargo.toml;
+            };
         in
         {
-          inherit (config) pkgsCross rustTarget isStatic;
-          inherit rust;
-          rustPlatform = config.pkgsCross.makeRustPlatform {
-            cargo = rust;
-            rustc = rust;
-          };
+          "lightway-client-${targetName}" = mkPkg "lightway-client";
+          "lightway-server-${targetName}" = mkPkg "lightway-server";
         };
 
-      # Helper: Build package for a target
-      mkPackage =
-        package: toolchain:
-        toolchain.pkgsCross.callPackage ../. {
-          inherit package;
-          rustPlatform = toolchain.rustPlatform;
-          isStatic = toolchain.isStatic;
-          # Don't pass platformSuffix - rustPlatform adds target triple automatically for cross-compilation
-        };
-
-      # Helper: Create both client and server for a target
-      mkTargetPackages = targetName: config: toolchain: {
-        "lightway-client-${targetName}" = mkPackage "lightway-client" toolchain;
-        "lightway-server-${targetName}" = mkPackage "lightway-server" toolchain;
-      };
-
-      # All cross-compilation toolchains
-      crossToolchains = lib.mapAttrs mkCrossToolchain crossTargets;
-
-      # Generate all packages (includes native musl and cross-compilation)
       crossPackages = lib.foldl' lib.mergeAttrs { } (
-        lib.mapAttrsToList (
-          name: toolchain: mkTargetPackages name crossTargets.${name} toolchain
-        ) crossToolchains
+        lib.mapAttrsToList (name: config: mkPackagePair name config) crossTargets
       );
 
-      # Native musl configuration for devShell (if on native arch)
-      nativeMuslConfig =
-        if nativeArch != null then
-          {
-            "x86_64" = crossTargets.x86_64-linux-musl or null;
-            "aarch64" = crossTargets.aarch64-linux-musl or null;
-          }
-          .${nativeArch} or null
-        else
-          null;
-
+      # Native musl toolchain config for the musl devShell (if on a Linux host)
       nativeMuslToolchain =
-        if nativeMuslConfig != null then
-          crossToolchains.${if nativeArch == "x86_64" then "x86_64-linux-musl" else "aarch64-linux-musl"}
+        if nativeArch == "x86_64" then
+          crossTargets."x86_64-linux-musl" or null
+        else if nativeArch == "aarch64" then
+          crossTargets."aarch64-linux-musl" or null
         else
           null;
     in
@@ -150,7 +179,8 @@
 
       devShells = lib.optionalAttrs (nativeMuslToolchain != null) {
         musl = nativeMuslToolchain.pkgsCross.callPackage ../shell.nix {
-          rustc = nativeMuslToolchain.rust.override {
+          rustc = (nativeMuslToolchain.rustBin or rustStable).minimal.override {
+            targets = [ nativeMuslToolchain.rustTarget ];
             extensions = [
               "rust-src"
               "rust-analyzer"

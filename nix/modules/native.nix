@@ -5,31 +5,12 @@
       lib,
       pkgs,
       system,
+      crane,
       rustStable,
       rustMsrv,
       ...
     }:
     let
-      # Rust platforms
-      rustPlatformStable = pkgs.makeRustPlatform {
-        cargo = rustStable.minimal;
-        rustc = rustStable.minimal;
-      };
-      rustPlatformMsrv = pkgs.makeRustPlatform {
-        cargo = rustMsrv.minimal;
-        rustc = rustMsrv.minimal;
-      };
-
-      # Helper: Build package
-      mkPackage =
-        package: pkgs: rustPlatform:
-        pkgs.callPackage ../. {
-          inherit package rustPlatform;
-          isStatic = false;
-          platformSuffix = nativeSuffix;
-        };
-
-      # Platform-specific package suffix for native builds
       nativeSuffix =
         if system == "x86_64-linux" then
           "x86_64-linux-gnu"
@@ -42,21 +23,51 @@
         else
           throw "Unsupported system: ${system}";
 
-      # Native packages for all platforms
-      nativePackages = {
-        # Pinned stable builds
-        "lightway-client-${nativeSuffix}" = mkPackage "lightway-client" pkgs rustPlatformStable;
-        "lightway-server-${nativeSuffix}" = mkPackage "lightway-server" pkgs rustPlatformStable;
+      buildFeatures = lib.optionals pkgs.stdenv.isLinux [ "io-uring" ];
 
-        # MSRV builds
-        "lightway-client-${nativeSuffix}-msrv" = mkPackage "lightway-client" pkgs rustPlatformMsrv;
-        "lightway-server-${nativeSuffix}-msrv" = mkPackage "lightway-server" pkgs rustPlatformMsrv;
-      };
+      # Common native build inputs (same for all native targets)
+      nativeBuildInputs = [
+        pkgs.autoconf
+        pkgs.automake
+        pkgs.libtool
+        pkgs.rustPlatform.bindgenHook
+      ];
+
+      # Build client + server for a given toolchain, sharing one cargoArtifacts derivation
+      mkPackagePair =
+        toolchain: suffix:
+        let
+          craneLib = (crane.mkLib pkgs).overrideToolchain (_p: toolchain.minimal);
+          src = craneLib.cleanCargoSource ../..;
+          commonArgs = {
+            inherit src buildFeatures nativeBuildInputs;
+            strictDeps = true;
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          mkPkg =
+            package:
+            pkgs.callPackage ../. {
+              inherit
+                craneLib
+                src
+                cargoArtifacts
+                buildFeatures
+                nativeBuildInputs
+                ;
+              package = package;
+              pname = package;
+              cargoTomlPath = ../../${package}/Cargo.toml;
+            };
+        in
+        {
+          "lightway-client-${suffix}" = mkPkg "lightway-client";
+          "lightway-server-${suffix}" = mkPkg "lightway-server";
+        };
     in
     {
-      packages = nativePackages;
+      packages =
+        (mkPackagePair rustStable nativeSuffix) // (mkPackagePair rustMsrv "${nativeSuffix}-msrv");
 
-      # Export nativeSuffix for use in flake.nix aliases
       _module.args.nativeSuffix = nativeSuffix;
     };
 }
